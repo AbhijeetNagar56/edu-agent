@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import {
   Users,
+  TrendingUp,
   Search,
   Filter,
   Download,
@@ -23,6 +24,9 @@ import { getCourses, getRubrics, getSubmissions, refreshRubrics, refreshSubmissi
 import { api } from '@/lib/api';
 import { exportSubmissionsToCSV, downloadJSON, getScoreColor } from '@/lib/utils';
 import { StatCard } from '@/components/StatCard';
+import { CreateCourseModal } from '@/components/CreateCourseModal';
+import { fetchFacultyCourses } from '@/lib/storage';
+import { BookOpen, ArrowRight, Plus } from 'lucide-react';
 import { StatusBadge } from '@/components/Badge';
 import { GradeDetailModal } from '@/components/GradeDetailModal';
 import { OverrideModal } from '@/components/OverrideModal';
@@ -30,10 +34,25 @@ import { RubricViewerModal } from '@/components/RubricViewerModal';
 
 export default function FacultyDashboardPage() {
   const [courses, setCourses] = useState<Course[]>([]);
+  const [facultyCourses, setFacultyCourses] = useState<Course[]>([]);
+  const [isCreateCourseOpen, setIsCreateCourseOpen] = useState(false);
   const [rubrics, setRubrics] = useState<Rubric[]>([]);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [selectedCourse, setSelectedCourse] = useState<string>('ALL');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
+  const [selectedAssignment, setSelectedAssignment] = useState<string>('ALL');
+
+  const availableAssignments = React.useMemo(() => {
+    const map = new Map<string, { id: string; title: string }>();
+    submissions.forEach((s) => {
+      if (selectedCourse === 'ALL' || s.courseCode === selectedCourse) {
+        if (s.assignmentId && !map.has(s.assignmentId)) {
+          map.set(s.assignmentId, { id: s.assignmentId, title: s.assignmentTitle || s.assignmentId });
+        }
+      }
+    });
+    return Array.from(map.values());
+  }, [submissions, selectedCourse]);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedSubForDetail, setSelectedSubForDetail] = useState<Submission | null>(null);
   const [selectedSubForOverride, setSelectedSubForOverride] = useState<Submission | null>(null);
@@ -45,8 +64,17 @@ export default function FacultyDashboardPage() {
     let active = true;
     void (async () => {
       try {
-        await Promise.all([refreshRubrics(), refreshSubmissions({ faculty: true })]);
-        if (active) { setCourses(getCourses()); setRubrics(getRubrics()); setSubmissions(getSubmissions()); }
+        const [fCourses] = await Promise.all([
+          fetchFacultyCourses().catch(() => []),
+          refreshRubrics(),
+          refreshSubmissions({ faculty: true }),
+        ]);
+        if (active) {
+          setFacultyCourses(fCourses);
+          setCourses(getCourses());
+          setRubrics(getRubrics());
+          setSubmissions(getSubmissions());
+        }
       } catch (error) { console.error(error); }
       finally { if (active) setMounted(true); }
     })();
@@ -74,6 +102,7 @@ export default function FacultyDashboardPage() {
   // Filter submissions
   const filteredSubmissions = submissions.filter((sub) => {
     if (selectedCourse !== 'ALL' && sub.courseCode !== selectedCourse) return false;
+    if (selectedAssignment !== 'ALL' && sub.assignmentId !== selectedAssignment) return false;
     if (statusFilter !== 'ALL') {
       if (statusFilter === 'overridden') {
         if (!sub.override?.isOverridden) return false;
@@ -142,6 +171,14 @@ export default function FacultyDashboardPage() {
 
         {/* Action Controls */}
         <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            onClick={() => setIsCreateCourseOpen(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>New Course</span>
+          </button>
+
           <button
             onClick={handleProcessPendingJobs}
             disabled={isProcessingBatch || pendingCount === 0}
@@ -224,6 +261,88 @@ export default function FacultyDashboardPage() {
         />
       </div>
 
+      {/* Courses & Curriculum Section */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between px-1">
+          <div>
+            <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <BookOpen className="w-4 h-4 text-blue-600" />
+              <span>Courses & Canonical Curriculum Graphs</span>
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Manage your courses, define pedagogical concepts, and construct prerequisite DAGs
+            </p>
+          </div>
+          <button
+            onClick={() => setIsCreateCourseOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/50 hover:bg-blue-100 transition"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Create Course</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {facultyCourses.map((c) => (
+            <div
+              key={c.id}
+              className="group bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-xs hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700 transition flex flex-col justify-between"
+            >
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                    {c.code}
+                  </span>
+                  <div className="flex items-center gap-2 text-[11px] font-mono text-slate-400">
+                    <span>{c.conceptsCount ?? 0} Concepts</span>
+                    <span>•</span>
+                    <span>{c.assignmentsCount ?? 0} Assigns</span>
+                  </div>
+                </div>
+                <h3 className="font-bold text-slate-900 dark:text-white text-sm mb-1 line-clamp-1">
+                  {c.name}
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed mb-4">
+                  {c.description || 'No description provided for this course.'}
+                </p>
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2 flex-wrap">
+                <Link
+                  href={`/faculty/courses/${c.id}/assignments`}
+                  className="flex items-center gap-1 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:text-blue-600 transition"
+                >
+                  <FileText className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Assigns ({c.assignmentsCount ?? 0})</span>
+                </Link>
+                <Link
+                  href={`/faculty/courses/${c.id}/curriculum`}
+                  className="flex items-center gap-1 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:text-blue-600 transition"
+                >
+                  <BookOpen className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Curriculum</span>
+                </Link>
+                <Link
+                  href={`/faculty/courses/${c.id}/students`}
+                  className="flex items-center gap-1 text-xs font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 transition"
+                >
+                  <Users className="w-3.5 h-3.5 text-indigo-500" />
+                  <span>Students</span>
+                </Link>
+                <Link
+                  href={`/faculty/courses/${c.id}/analytics`}
+                  className="flex items-center gap-1 text-xs font-semibold text-purple-600 dark:text-purple-400 hover:text-purple-700 transition"
+                >
+                  <TrendingUp className="w-3.5 h-3.5 text-purple-600" />
+                  <span>Analytics</span>
+                  <ArrowRight className="w-3 h-3" />
+                </Link>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Filter and Search Bar */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-xs flex flex-wrap items-center justify-between gap-4">
         {/* Search Input */}
@@ -245,13 +364,33 @@ export default function FacultyDashboardPage() {
             <span className="text-xs text-slate-500 font-medium">Course:</span>
             <select
               value={selectedCourse}
-              onChange={(e) => setSelectedCourse(e.target.value)}
+              onChange={(e) => {
+                setSelectedCourse(e.target.value);
+                setSelectedAssignment('ALL');
+              }}
               className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="ALL">All Courses</option>
               {courses.map((c) => (
                 <option key={c.id} value={c.code}>
                   {c.code} - {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Assignment Filter */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-slate-500 font-medium">Assignment:</span>
+            <select
+              value={selectedAssignment}
+              onChange={(e) => setSelectedAssignment(e.target.value)}
+              className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 max-w-[200px] truncate"
+            >
+              <option value="ALL">All Assignments</option>
+              {availableAssignments.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.title}
                 </option>
               ))}
             </select>
@@ -266,9 +405,10 @@ export default function FacultyDashboardPage() {
               className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="ALL">All Statuses</option>
+              <option value="done">Done / Evaluated</option>
+              <option value="manual_review">Manual Review Required</option>
               <option value="pending">Pending</option>
               <option value="processing">Processing</option>
-              <option value="done">Done / Evaluated</option>
               <option value="flagged">Flagged</option>
               <option value="overridden">Faculty Overridden</option>
             </select>

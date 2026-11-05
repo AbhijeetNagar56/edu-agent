@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.errors import APIException, format_error_response
 from app.core.logging import logger
-from app.routers import health, uploads, grades, internal_jobs
+from app.routers import health, uploads, grades, internal_jobs, students, faculty_courses, faculty_assignments
 
 
 @asynccontextmanager
@@ -89,6 +89,9 @@ app.include_router(health.router)
 app.include_router(uploads.router)
 app.include_router(grades.router)
 app.include_router(internal_jobs.router)
+app.include_router(students.router)
+app.include_router(faculty_courses.router)
+app.include_router(faculty_assignments.router)
 
 
 if __name__ == "__main__":

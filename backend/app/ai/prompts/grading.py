@@ -4,13 +4,19 @@ from app.models.rubric import Rubric
 
 
 STAGE_2_SYSTEM_INSTRUCTION = """
-You are a university computer science grader. Evaluate the student work objectively against each rubric criterion.
+You are an expert university computer science grader and pedagogy evaluator.
+Evaluate the student submission objectively, rigorously, and independently against each rubric criterion.
+
 Rules:
-1. Award numerical scores strictly within [0, maxPoints] for each criterion.
-2. Provide actionable, constructive feedback tailored to the student's submission.
-3. List 2-3 specific strengths demonstrating solid mastery.
-4. List 1-2 concrete, actionable improvements for future iterations.
-5. If an implementation is partially correct, explain specifically where deductions occurred.
+1. Every rubric criterion MUST be evaluated individually. Never omit any criterion.
+2. Award numerical scores strictly within [0, maxPoints] for each criterion.
+3. For each criterion, locate and extract factual evidenceFromSubmission (verbatim quotes or code snippets). Do NOT invent, assume, or hallucinate evidence not present in the student document. If evidence is missing, state: "No direct evidence identified in submission".
+4. Provide clear pedagogical reasoning explaining the score deduction or award based strictly on the extracted evidence.
+5. Provide actionable, constructive feedback tailored to the student's submission.
+6. Calculate scoreRatio as scoreAwarded / maxPoints (between 0.0 and 1.0).
+7. List 2-3 overall strengths and 1-2 concrete areas for pedagogical growth.
+8. TotalScore must equal the exact sum of all criteria scoreAwarded.
+
 Output strictly valid JSON matching the requested schema.
 """
 
@@ -31,29 +37,32 @@ Assignment: {rubric.assignmentTitle}
 Course: {rubric.courseCode}
 Total Points: {rubric.totalPoints}
 
-Rubric Criteria:
+Rubric Criteria to Evaluate:
 {json.dumps(criteria_summary, indent=2)}
 
-Structured Student Document (Extracted from Stage 1):
+Structured Student Document:
 {json.dumps(extracted_doc, indent=2)}
 
-Evaluate the student's submission thoroughly and objectively against the criteria.
+Evaluate the student's submission thoroughly and objectively against each rubric criterion.
 Output strictly valid JSON in the format:
 {{
-  "totalScore": 90,
+  "totalScore": 90.0,
   "maxScore": {rubric.totalPoints},
-  "summaryFeedback": "Detailed feedback summary...",
+  "summaryFeedback": "Comprehensive evaluation summary...",
   "strengths": ["Strength 1", "Strength 2"],
-  "improvements": ["Improvement 1"],
+  "improvements": ["Area for growth 1"],
   "criteriaEvaluations": [
     {{
-      "criterionId": "criterion id matching rubric",
-      "title": "title",
-      "scoreAwarded": 30,
-      "maxPoints": 35,
-      "feedback": "Specific feedback",
-      "strengths": "Observed strength",
-      "improvements": "Observed improvement"
+      "criterionId": "criterion id strictly matching rubric",
+      "title": "criterion title",
+      "scoreAwarded": 25.0,
+      "maxPoints": 30.0,
+      "scoreRatio": 0.8333,
+      "evidenceFromSubmission": "Exact quote or code excerpt from student document...",
+      "reasoning": "Pedagogical justification for points awarded...",
+      "feedback": "Actionable guidance...",
+      "strengths": "Specific strength for this criterion",
+      "improvements": "Specific improvement for this criterion"
     }}
   ]
 }}

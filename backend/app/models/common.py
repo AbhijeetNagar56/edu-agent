@@ -10,6 +10,7 @@ class JobStatus(str, Enum):
     DONE = "done"
     FAILED = "failed"
     FLAGGED = "flagged"
+    MANUAL_REVIEW = "manual_review"
 
 
 class ProcessingStep(str, Enum):

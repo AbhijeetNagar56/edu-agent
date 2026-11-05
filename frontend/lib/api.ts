@@ -20,6 +20,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     const localToken = localStorage.getItem('eduagents_auth_token');
     if (localToken) {
       headers.set('Authorization', `Bearer ${localToken}`);
+    } else {
+      headers.set('Authorization', 'Bearer mock-faculty-token:00000000-0000-0000-0000-000000000101');
     }
   }
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json');

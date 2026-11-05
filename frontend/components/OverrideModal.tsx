@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { ShieldCheck, AlertCircle } from 'lucide-react';
 import { Submission, FacultyOverride } from '../lib/types';
 import { Modal } from './Modal';
-import { overrideGrade } from '../lib/storage';
+import { overrideGrade, removeSubmissionOverride } from '../lib/storage';
 
 interface OverrideModalProps {
   isOpen: boolean;
@@ -24,6 +24,32 @@ export function OverrideModal({
   const [overrideReason, setOverrideReason] = useState<string>('');
   const [criterionAdjustments, setCriterionAdjustments] = useState<Record<string, number>>({});
   const [error, setError] = useState<string>('');
+  const [isReverting, setIsReverting] = useState<boolean>(false);
+
+  const handleRevert = async () => {
+    if (!submission) return;
+    if (!window.confirm('Are you sure you want to revoke this faculty override and restore pure AI evaluation?')) {
+      return;
+    }
+    setIsReverting(true);
+    try {
+      await removeSubmissionOverride(submission.id, 'Faculty revoked override and reverted to AI score');
+      const revertedSub: Submission = {
+        ...submission,
+        override: submission.override ? {
+          ...submission.override,
+          isOverridden: false,
+          overriddenScore: submission.evaluation?.score ?? 0,
+        } : undefined,
+      };
+      onOverrideSaved(revertedSub);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not remove override.');
+    } finally {
+      setIsReverting(false);
+    }
+  };
 
   useEffect(() => {
     if (submission) {
@@ -230,21 +256,35 @@ export function OverrideModal({
         )}
 
         {/* Actions */}
-        <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100 dark:border-slate-800">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 rounded-xl text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            className="flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-semibold text-white bg-purple-600 hover:bg-purple-700 shadow-sm transition"
-          >
-            <ShieldCheck className="w-4 h-4" />
-            <span>Apply Faculty Override</span>
-          </button>
+        <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+          <div>
+            {submission.override?.isOverridden && (
+              <button
+                type="button"
+                onClick={handleRevert}
+                disabled={isReverting}
+                className="px-3.5 py-2 rounded-xl text-xs font-semibold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-300 dark:hover:bg-rose-900/60 border border-rose-200 dark:border-rose-800 transition disabled:opacity-50"
+              >
+                {isReverting ? 'Reverting...' : 'Revert to Original AI Grade'}
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-xl text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-semibold text-white bg-purple-600 hover:bg-purple-700 shadow-sm transition"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              <span>Apply Faculty Override</span>
+            </button>
+          </div>
         </div>
       </form>
     </Modal>

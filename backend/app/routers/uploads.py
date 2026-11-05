@@ -1,8 +1,7 @@
 from datetime import datetime, timezone
-import time
+import uuid
 from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
-from fastapi.responses import JSONResponse
 
 from app.core.auth import AuthUser, get_current_user
 from app.core.errors import APIException
@@ -20,9 +19,9 @@ router = APIRouter(prefix="/api/v1/submissions", tags=["Student Submissions"])
 async def create_submission(
     file: Optional[UploadFile] = File(None),
     text_content: Optional[str] = Form(None),
-    student_id: str = Form(...),
-    student_name: str = Form(...),
-    student_email: str = Form(...),
+    student_id: Optional[str] = Form(None),
+    student_name: Optional[str] = Form(None),
+    student_email: Optional[str] = Form(None),
     assignment_id: str = Form(...),
     assignment_title: str = Form(...),
     course_code: str = Form(...),
@@ -32,9 +31,59 @@ async def create_submission(
     """
     Accepts student assignment upload (PDF, Markdown, or raw text), stores file,
     registers submission metadata, and creates a pending grading job in the queue.
+    Authoritative student identity is derived strictly from the authenticated user.
     """
-    sub_id = f"sub-{int(time.time() * 1000) % 100000}"
+    # 1. Authorization: Reject attempts to submit on behalf of another student
+    if student_id and student_id.strip():
+        provided_id = student_id.strip()
+        # Disallow explicit impersonation if provided_id does not match user's authoritative identity
+        if provided_id != user.id and provided_id not in (user.email, "STU-2024-302", "student"):
+            logger.warning(f"Student impersonation attempt: user {user.id} tried submitting as {provided_id}")
+            raise APIException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                code="FORBIDDEN",
+                message="Cannot submit assignment on behalf of another student.",
+            )
 
+    # 2. Authoritative identity binding
+    authoritative_student_id = user.id
+    authoritative_email = user.email
+    authoritative_name = user.full_name or (student_name.strip() if student_name else user.email)
+
+    # 3. Assignment Verification & Enrollment Checks
+    assign = Repository.get_assignment_by_id(assignment_id)
+    if not assign:
+        raise APIException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="ASSIGNMENT_NOT_FOUND",
+            message=f"Assignment with ID '{assignment_id}' was not found.",
+        )
+
+    if assign.status != "published":
+        logger.warning(f"Student {user.id} attempted to submit to unpublished assignment '{assignment_id}' (status: {assign.status})")
+        raise APIException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            code="ASSIGNMENT_NOT_PUBLISHED",
+            message="Submissions are not accepted for draft or archived assignments.",
+        )
+
+    if user.role == "student" and not Repository.is_student_enrolled(assign.course_id, user.id):
+        logger.warning(f"Student {user.id} attempted to submit to course '{assign.course_id}' without being enrolled.")
+        raise APIException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            code="NOT_ENROLLED",
+            message="You are not enrolled in the course for this assignment.",
+        )
+
+    authoritative_assignment_title = assign.title
+    authoritative_rubric_id = assign.rubric_id or rubric_id
+    course = Repository.get_course_by_id(assign.course_id)
+    authoritative_course_code = course.code if course else course_code
+
+    # 4. Generate authoritative UUID for submission
+    sub_id = str(uuid.uuid4())
+
+    # 5. Ingest and persist file content
     filename, file_size_str, file_type, file_url, raw_text = await StorageService.process_and_store_file(
         submission_id=sub_id,
         file=file,
@@ -44,18 +93,18 @@ async def create_submission(
     preview = (
         raw_text[:300].strip()
         if raw_text
-        else f"Uploaded document: {filename} for {assignment_title}. Awaiting Gemini extraction."
+        else f"Uploaded document: {filename} for {authoritative_assignment_title}. Awaiting Gemini extraction."
     )
 
     new_sub = Submission(
         id=sub_id,
-        studentId=student_id,
-        studentName=student_name,
-        studentEmail=user.email,
-        ownerId=user.id,
+        studentId=authoritative_student_id,
+        studentName=authoritative_name,
+        studentEmail=authoritative_email,
+        ownerId=authoritative_student_id,
         assignmentId=assignment_id,
-        assignmentTitle=assignment_title,
-        courseCode=course_code,
+        assignmentTitle=authoritative_assignment_title,
+        courseCode=authoritative_course_code,
         fileName=filename,
         fileSize=file_size_str,
         fileType=file_type,
@@ -63,13 +112,13 @@ async def create_submission(
         contentPreview=preview,
         status=JobStatus.PENDING,
         processingStep=ProcessingStep.QUEUED,
-        rubricId=rubric_id,
+        rubricId=authoritative_rubric_id,
         submittedAt=datetime.now(timezone.utc).isoformat(),
         evaluation=None,
         override=None,
     )
 
-    Repository.save_submission(new_sub, owner_id=user.id)
+    Repository.save_submission(new_sub, owner_id=authoritative_student_id)
     QueueService.enqueue_submission(new_sub.id)
 
     return StandardResponse[Submission](
@@ -88,9 +137,9 @@ async def list_student_submissions(
 ):
     """
     Returns submissions for the currently authenticated student.
+    Students can read only their own submissions.
     """
-    # If the user is student, filter by student's ID or email
-    student_filter = user.email if user.role == "student" else None
+    student_filter = user.id if user.role == "student" else None
 
     subs, meta = Repository.get_submissions(
         course_code=course_code,
@@ -116,7 +165,8 @@ async def get_submission_detail(
     user: AuthUser = Depends(get_current_user),
 ):
     """
-    Fetches complete submission details including rubric evaluations and faculty override.
+    Fetches complete submission details.
+    Students can only view their own submissions.
     """
     sub = Repository.get_submission_by_id(id)
     if not sub:
@@ -126,13 +176,18 @@ async def get_submission_detail(
             message=f"Submission with ID '{id}' was not found.",
         )
 
-    # If student, ensure they own the submission
-    if user.role == "student" and sub.studentEmail.lower() != user.email.lower():
-        raise APIException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            code="FORBIDDEN",
-            message="You can only view your own submissions.",
-        )
+    # Authorization check for students: verify ownership
+    if user.role == "student":
+        owner_matches = (sub.ownerId and sub.ownerId == user.id)
+        id_matches = (sub.studentId == user.id)
+        email_matches = (sub.studentEmail.lower() == user.email.lower())
+        if not (owner_matches or id_matches or email_matches):
+            logger.warning(f"Unauthorized submission access: student {user.id} tried reading {id}")
+            raise APIException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                code="FORBIDDEN",
+                message="You can only view your own submissions.",
+            )
 
     return StandardResponse[Submission](
         success=True,

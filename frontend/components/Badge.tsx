@@ -51,6 +51,14 @@ export function StatusBadge({ status, isOverridden, size = 'md' }: BadgeProps) {
           Review Flagged
         </span>
       );
+    case 'manual_review':
+      return (
+        <span className={`inline-flex items-center gap-1.5 rounded-full bg-orange-50 text-orange-700 border border-orange-200 dark:bg-orange-950/40 dark:text-orange-300 dark:border-orange-800 ${sizeClasses}`}>
+          <AlertTriangle className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
+          Manual Review Required
+        </span>
+      );
+
     case 'failed':
       return (
         <span className={`inline-flex items-center gap-1.5 rounded-full bg-gray-50 text-gray-700 border border-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-700 ${sizeClasses}`}>

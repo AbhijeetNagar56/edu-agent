@@ -12,6 +12,69 @@ class GradingError(Exception):
     pass
 
 
+def validate_grading_output(grading_res: GradingOutput, rubric: Rubric) -> GradingOutput:
+    """
+    Strictly validates structured grading output against the canonical rubric.
+    Enforces score bounds [0, maxPoints], criterion ID validity, complete criterion coverage,
+    and mathematical consistency of total scores.
+    """
+    rubric_crit_map = {c.id: c for c in rubric.criteria}
+    evaluated_ids = set()
+    total_awarded = 0.0
+
+    for crit in grading_res.criteriaEvaluations:
+        if crit.criterionId not in rubric_crit_map:
+            raise GradingError(
+                f"Unknown criterionId '{crit.criterionId}' not present in rubric '{rubric.id}'."
+            )
+
+        if crit.criterionId in evaluated_ids:
+            raise GradingError(
+                f"Duplicate evaluation output for criterion '{crit.criterionId}'."
+            )
+        evaluated_ids.add(crit.criterionId)
+
+        expected_crit = rubric_crit_map[crit.criterionId]
+        crit.maxPoints = expected_crit.maxPoints
+        if not crit.title:
+            crit.title = expected_crit.title
+
+        # Strict score bounds validation
+        if crit.scoreAwarded < 0.0:
+            raise GradingError(
+                f"Negative score awarded ({crit.scoreAwarded}) for criterion '{crit.criterionId}'."
+            )
+        if crit.scoreAwarded > crit.maxPoints:
+            raise GradingError(
+                f"Awarded score ({crit.scoreAwarded}) exceeds max points ({crit.maxPoints}) for criterion '{crit.criterionId}'."
+            )
+
+        # Calculate exact ratio
+        crit.scoreRatio = (
+            round(crit.scoreAwarded / crit.maxPoints, 4) if crit.maxPoints > 0 else 0.0
+        )
+        total_awarded += crit.scoreAwarded
+
+        # Ensure evidence and reasoning strings are not None
+        if not crit.evidenceFromSubmission:
+            crit.evidenceFromSubmission = "No direct evidence identified in submission."
+        if not crit.reasoning:
+            crit.reasoning = f"Evaluated based on adherence to {crit.title} criteria."
+
+    # Check complete coverage: every rubric criterion must be present
+    missing_criteria = set(rubric_crit_map.keys()) - evaluated_ids
+    if missing_criteria:
+        raise GradingError(
+            f"Evaluation omitted required rubric criteria: {sorted(list(missing_criteria))}."
+        )
+
+    # Reconcile total score and max score
+    grading_res.totalScore = round(total_awarded, 1)
+    grading_res.maxScore = rubric.totalPoints
+
+    return grading_res
+
+
 async def evaluate_submission_against_rubric(
     structured_doc: StructuredDocument,
     rubric: Rubric,
@@ -49,14 +112,10 @@ async def evaluate_submission_against_rubric(
             parsed_json = json.loads(response_text.strip())
             grading_res = GradingOutput.model_validate(parsed_json)
 
-            # Enforce bounds
-            total = 0.0
-            for crit in grading_res.criteriaEvaluations:
-                crit.scoreAwarded = max(0.0, min(crit.scoreAwarded, crit.maxPoints))
-                total += crit.scoreAwarded
-            grading_res.totalScore = total
-
-            return grading_res
+            # Strict validation against canonical rubric
+            return validate_grading_output(grading_res, rubric)
+        except (RateLimitException, GradingError):
+            raise
         except Exception as e:
             error_str = str(e)
             if "429" in error_str or "quota" in error_str.lower() or "resource exhausted" in error_str.lower():
@@ -71,6 +130,7 @@ async def evaluate_submission_against_rubric(
 def _heuristic_evaluator(structured_doc: StructuredDocument, rubric: Rubric) -> GradingOutput:
     """
     Deterministic rule-based evaluator used in development and test environments.
+    Extracts genuine textual evidence and code blocks from the structured document.
     """
     criteria_evals = []
     total_awarded = 0.0
@@ -78,13 +138,42 @@ def _heuristic_evaluator(structured_doc: StructuredDocument, rubric: Rubric) -> 
     has_code = structured_doc.formatValidation.hasExecutableCode
     has_theory = structured_doc.formatValidation.hasTheoreticalAnalysis
 
+    # Gather evidence samples from extracted sections
+    all_content = " ".join(s.content for s in structured_doc.sections)
+    code_samples = []
+    for s in structured_doc.sections:
+        if s.codeBlocks:
+            code_samples.extend(cb.code[:150] for cb in s.codeBlocks)
+
+    evidence_fallback = (
+        f"Document section '{structured_doc.sections[0].sectionTitle}': {structured_doc.sections[0].content[:160]}..."
+        if structured_doc.sections
+        else "Document content analyzed."
+    )
+
     for crit in rubric.criteria:
-        # High quality score ratio based on document features
+        crit_title_lower = crit.title.lower()
         ratio = 0.88
-        if "code" in crit.title.lower() or "implementation" in crit.title.lower():
+        evidence_str = evidence_fallback
+
+        if "code" in crit_title_lower or "implementation" in crit_title_lower:
             ratio = 0.92 if has_code else 0.70
-        elif "complexity" in crit.title.lower() or "theory" in crit.title.lower():
+            if code_samples:
+                evidence_str = f"Implementation extract: {code_samples[0]}"
+            reasoning_str = (
+                "Executable implementation provided satisfying baseline operational constraints."
+                if has_code
+                else "No executable code blocks detected in document structure."
+            )
+        elif "complexity" in crit_title_lower or "theory" in crit_title_lower or "bound" in crit_title_lower:
             ratio = 0.90 if has_theory else 0.65
+            reasoning_str = (
+                "Theoretical analysis and asymptotic derivations present in analysis sections."
+                if has_theory
+                else "Theoretical complexity proof incomplete or missing asymptotic derivation."
+            )
+        else:
+            reasoning_str = f"Demonstrates solid comprehension of {crit.title} principles."
 
         awarded = round(crit.maxPoints * ratio, 1)
         awarded = min(awarded, crit.maxPoints)
@@ -96,13 +185,16 @@ def _heuristic_evaluator(structured_doc: StructuredDocument, rubric: Rubric) -> 
                 title=crit.title,
                 scoreAwarded=awarded,
                 maxPoints=crit.maxPoints,
+                scoreRatio=round(awarded / crit.maxPoints, 4) if crit.maxPoints > 0 else 0.0,
+                evidenceFromSubmission=evidence_str,
+                reasoning=reasoning_str,
                 feedback=f"Demonstrates comprehensive mastery of {crit.title}. Solution aligns closely with requirements.",
-                strengths=f"Clean implementation and clear articulation of core principles in {crit.title}.",
-                improvements=f"Consider including additional edge-case stress tests and formal asymptotic derivations.",
+                strengths=f"Clean presentation and clear articulation of core principles in {crit.title}.",
+                improvements=f"Consider including additional edge-case stress tests and formal derivations.",
             )
         )
 
-    return GradingOutput(
+    grading_res = GradingOutput(
         totalScore=round(total_awarded, 1),
         maxScore=rubric.totalPoints,
         summaryFeedback=f"Assignment '{rubric.assignmentTitle}' evaluated successfully by Gemini 2-Step Agentic Pipeline. Demonstrates solid technical execution, comprehensive analysis, and adherence to rubric standards.",
@@ -117,3 +209,5 @@ def _heuristic_evaluator(structured_doc: StructuredDocument, rubric: Rubric) -> 
         ],
         criteriaEvaluations=criteria_evals,
     )
+
+    return validate_grading_output(grading_res, rubric)

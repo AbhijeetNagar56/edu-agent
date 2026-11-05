@@ -10,6 +10,9 @@ class GradingJob(BaseModel):
     submissionId: str = Field(..., alias="submissionId")
     status: JobStatus = JobStatus.PENDING
     retryCount: int = Field(0, alias="retryCount")
+    maxRetries: int = Field(3, alias="maxRetries")
+    lockedBy: Optional[str] = Field(None, alias="lockedBy")
+    lockedAt: Optional[str] = Field(None, alias="lockedAt")
     errorLog: Optional[str] = Field(None, alias="errorLog")
     startedAt: Optional[str] = Field(None, alias="startedAt")
     completedAt: Optional[str] = Field(None, alias="completedAt")

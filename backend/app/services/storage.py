@@ -1,5 +1,6 @@
 import io
 import os
+import re
 from typing import Optional, Tuple
 from fastapi import UploadFile
 import pypdf
@@ -33,6 +34,23 @@ class StorageService:
         except Exception as e:
             logger.error(f"Error extracting text from PDF: {e}")
             return ""
+
+    @staticmethod
+    def is_unextractable_or_empty(text: Optional[str]) -> bool:
+        """
+        Determines whether extracted document text is empty, contains only page markers,
+        or indicates an unextractable scanned/image-only PDF requiring manual faculty review.
+        """
+        if not text:
+            return True
+        s = text.strip()
+        if not s:
+            return True
+        if "[UNEXTRACTABLE_PDF" in s or "[Binary PDF Content" in s:
+            return True
+        # Strip page markers and check if actual substantive words exist
+        cleaned = re.sub(r"--- Page \d+ ---", "", s).strip()
+        return len(cleaned.split()) < 3
 
     @staticmethod
     async def process_and_store_file(
@@ -75,8 +93,12 @@ class StorageService:
             # Extract raw text
             if ext == ".pdf":
                 raw_text = StorageService.extract_text_from_pdf(contents)
-                if not raw_text:
-                    raw_text = f"Document: {filename}\n[Binary PDF Content - {file_size_str}]"
+                if not raw_text or not raw_text.strip():
+                    raw_text = (
+                        f"Document: {filename}\n"
+                        f"[UNEXTRACTABLE_PDF: Scanned or image-only PDF ({file_size_str}). "
+                        f"No extractable text found with standard parser. OCR is not implemented.]"
+                    )
             else:
                 try:
                     raw_text = contents.decode("utf-8")
@@ -151,5 +173,11 @@ class StorageService:
         if contents is None:
             return preview or f"Student submission: {filename}"
         if filename.lower().endswith(".pdf"):
-            return StorageService.extract_text_from_pdf(contents) or preview or f"Student submission: {filename}"
+            extracted = StorageService.extract_text_from_pdf(contents)
+            if not extracted or not extracted.strip():
+                return (
+                    f"Document: {filename}\n"
+                    f"[UNEXTRACTABLE_PDF: Scanned or image-only PDF. No extractable text found. OCR is not implemented.]"
+                )
+            return extracted
         return contents.decode("utf-8", errors="replace")

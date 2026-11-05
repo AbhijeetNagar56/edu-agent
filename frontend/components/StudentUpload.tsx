@@ -9,15 +9,21 @@ import {
   AlertCircle,
   Eye,
   Sparkles,
-  Info
+  Info,
+  BookOpen,
+  Calendar,
+  Award,
 } from 'lucide-react';
-import { Course, Rubric, Submission } from '../lib/types';
+import { Course, Rubric, StudentAssignment, Submission } from '../lib/types';
 import { createSubmission } from '../lib/storage';
 import { getSessionUser } from '../lib/api';
 
 interface StudentUploadProps {
   courses: Course[];
   rubrics: Rubric[];
+  studentAssignments?: StudentAssignment[];
+  selectedAssignmentId?: string;
+  onSelectAssignment?: (id: string) => void;
   onSubmissionCreated: (newSub: Submission) => void;
   onViewRubric?: (rubric: Rubric) => void;
 }
@@ -25,18 +31,41 @@ interface StudentUploadProps {
 export function StudentUpload({
   courses,
   rubrics,
+  studentAssignments = [],
+  selectedAssignmentId: controlledAssignId,
+  onSelectAssignment,
   onSubmissionCreated,
-  onViewRubric
+  onViewRubric,
 }: StudentUploadProps) {
-  const [selectedCourseId, setSelectedCourseId] = useState<string>(courses[0]?.id || '');
-  const selectedCourse = courses.find(c => c.id === selectedCourseId) || courses[0];
+  // Use authoritative student assignments if available
+  const hasAuthoritativeAssigns = studentAssignments.length > 0;
 
+  // Selected Assignment ID
   const [selectedAssignId, setSelectedAssignId] = useState<string>(
-    selectedCourse?.assignments[0]?.id || ''
+    controlledAssignId || studentAssignments[0]?.id || courses[0]?.assignments[0]?.id || ''
   );
 
-  const selectedAssign = selectedCourse?.assignments.find(a => a.id === selectedAssignId) || selectedCourse?.assignments[0];
-  const activeRubric = rubrics.find(r => r.id === selectedAssign?.rubricId) || rubrics[0];
+  useEffect(() => {
+    if (controlledAssignId) {
+      setSelectedAssignId(controlledAssignId);
+    } else if (hasAuthoritativeAssigns && !studentAssignments.some((a) => a.id === selectedAssignId)) {
+      setSelectedAssignId(studentAssignments[0]?.id || '');
+    }
+  }, [controlledAssignId, studentAssignments, hasAuthoritativeAssigns]);
+
+  // Find active student assignment (authoritative) or legacy assignment
+  const activeStudentAssign = studentAssignments.find((a) => a.id === selectedAssignId);
+
+  // Legacy fallback: find course
+  const [selectedCourseId, setSelectedCourseId] = useState<string>(
+    activeStudentAssign?.courseId || courses[0]?.id || ''
+  );
+  const selectedCourse = courses.find((c) => c.id === selectedCourseId) || courses[0];
+  const legacyAssign = selectedCourse?.assignments.find((a) => a.id === selectedAssignId) || selectedCourse?.assignments[0];
+
+  const activeRubric = hasAuthoritativeAssigns
+    ? (activeStudentAssign?.rubric || rubrics.find((r) => r.id === activeStudentAssign?.rubricId))
+    : (rubrics.find((r) => r.id === legacyAssign?.rubricId) || rubrics[0]);
 
   const [studentName, setStudentName] = useState('');
   const [studentId, setStudentId] = useState('');
@@ -73,6 +102,15 @@ export function StudentUpload({
     }
   };
 
+  const handleAssignmentChange = (newAssignId: string) => {
+    setSelectedAssignId(newAssignId);
+    if (onSelectAssignment) onSelectAssignment(newAssignId);
+    if (hasAuthoritativeAssigns) {
+      const target = studentAssignments.find((a) => a.id === newAssignId);
+      if (target) setSelectedCourseId(target.courseId);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -90,13 +128,34 @@ export function StudentUpload({
     setIsSubmitting(true);
 
     try {
+      const assignmentIdToSubmit = hasAuthoritativeAssigns
+        ? (activeStudentAssign?.id || '')
+        : (legacyAssign?.id || '');
+
+      const assignmentTitleToSubmit = hasAuthoritativeAssigns
+        ? (activeStudentAssign?.title || '')
+        : (legacyAssign?.title || '');
+
+      const courseCodeToSubmit = hasAuthoritativeAssigns
+        ? (activeStudentAssign?.courseCode || '')
+        : (selectedCourse?.code || '');
+
+      const rubricIdToSubmit = hasAuthoritativeAssigns
+        ? (activeStudentAssign?.rubricId || activeRubric?.id || '')
+        : (activeRubric?.id || '');
+
       const newSub = await createSubmission({
         file: uploadMode === 'file' ? file ?? undefined : undefined,
         textContent: uploadMode === 'text' ? textContent : undefined,
-        studentId: studentId.trim(), studentName: studentName.trim(), studentEmail: studentEmail.trim(),
-        assignmentId: selectedAssign?.id || '', assignmentTitle: selectedAssign?.title || '',
-        courseCode: selectedCourse?.code || '', rubricId: activeRubric?.id || '',
+        studentId: studentId.trim(),
+        studentName: studentName.trim(),
+        studentEmail: studentEmail.trim(),
+        assignmentId: assignmentIdToSubmit,
+        assignmentTitle: assignmentTitleToSubmit,
+        courseCode: courseCodeToSubmit,
+        rubricId: rubricIdToSubmit,
       });
+
       onSubmissionCreated(newSub);
       setFile(null);
       setTextContent('');
@@ -112,7 +171,7 @@ export function StudentUpload({
       <div className="flex flex-wrap items-center justify-between gap-3 mb-6 pb-4 border-b border-slate-100 dark:border-slate-800">
         <div>
           <h2 className="font-bold text-slate-900 dark:text-white text-base">
-            Submit New Assignment
+            Submit Assignment Work
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
             Upload your solution in PDF or Markdown format for automated AI rubric evaluation.
@@ -132,48 +191,92 @@ export function StudentUpload({
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-5">
-        {/* Course & Assignment Selector */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {/* Assignment Selector */}
+        {hasAuthoritativeAssigns ? (
           <div>
             <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-              Course
-            </label>
-            <select
-              value={selectedCourseId}
-              onChange={(e) => {
-                setSelectedCourseId(e.target.value);
-                const course = courses.find(c => c.id === e.target.value);
-                if (course && course.assignments.length > 0) {
-                  setSelectedAssignId(course.assignments[0].id);
-                }
-              }}
-              className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
-            >
-              {courses.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.code} – {c.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-              Assignment
+              Select Published Assignment
             </label>
             <select
               value={selectedAssignId}
-              onChange={(e) => setSelectedAssignId(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+              onChange={(e) => handleAssignmentChange(e.target.value)}
+              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-hidden font-medium"
             >
-              {selectedCourse?.assignments.map((a) => (
+              {studentAssignments.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.title}
+                  [{a.courseCode}] {a.title} (Max {a.maxPoints} pts • Due {new Date(a.dueDate).toLocaleDateString()})
                 </option>
               ))}
             </select>
           </div>
-        </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                Course
+              </label>
+              <select
+                value={selectedCourseId}
+                onChange={(e) => {
+                  setSelectedCourseId(e.target.value);
+                  const course = courses.find((c) => c.id === e.target.value);
+                  if (course && course.assignments.length > 0) {
+                    setSelectedAssignId(course.assignments[0].id);
+                  }
+                }}
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+              >
+                {courses.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.code} – {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                Assignment
+              </label>
+              <select
+                value={selectedAssignId}
+                onChange={(e) => handleAssignmentChange(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+              >
+                {selectedCourse?.assignments.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+
+        {/* Targeted Curriculum Concepts Visualization */}
+        {activeStudentAssign && activeStudentAssign.concepts && activeStudentAssign.concepts.length > 0 && (
+          <div className="p-3.5 rounded-xl border border-indigo-100 dark:border-indigo-950/60 bg-indigo-50/40 dark:bg-indigo-950/20 space-y-2">
+            <div className="flex items-center justify-between text-[11px] font-semibold text-indigo-900 dark:text-indigo-300">
+              <span className="flex items-center gap-1.5">
+                <BookOpen className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Targeted Curriculum Concepts ({activeStudentAssign.concepts.length}):</span>
+              </span>
+              <span className="text-[10px] text-indigo-600 font-mono">
+                {activeStudentAssign.maxPoints} pts max
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {activeStudentAssign.concepts.map((concept) => (
+                <span
+                  key={concept.id}
+                  className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[10px] font-medium bg-white dark:bg-slate-800 text-indigo-800 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-900 shadow-2xs"
+                >
+                  <span>{concept.name}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Student Metadata Inputs */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50 dark:bg-slate-800/40 p-3.5 rounded-xl border border-slate-200 dark:border-slate-700">

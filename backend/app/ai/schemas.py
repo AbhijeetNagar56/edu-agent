@@ -35,6 +35,9 @@ class CriterionGradingOutput(BaseModel):
     title: str
     scoreAwarded: float
     maxPoints: float
+    scoreRatio: float = Field(default=0.0)
+    evidenceFromSubmission: str = Field(default="")
+    reasoning: str = Field(default="")
     feedback: str
     strengths: Optional[str] = None
     improvements: Optional[str] = None

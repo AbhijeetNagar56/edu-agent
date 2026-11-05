@@ -31,13 +31,16 @@ async def run_evaluation_pipeline(
 
     duration_ms = int((time.time() - start_time) * 1000)
 
-    # Map to EvaluationResult
+    # Map to CriterionEvaluation with evidence, reasoning, and scoreRatio
     criteria_scores = [
         CriterionEvaluation(
             criterionId=c.criterionId,
             title=c.title,
             scoreAwarded=c.scoreAwarded,
             maxPoints=c.maxPoints,
+            scoreRatio=c.scoreRatio,
+            evidence=c.evidenceFromSubmission,
+            reasoning=c.reasoning,
             feedback=c.feedback,
             strengths=c.strengths,
             improvements=c.improvements,
@@ -56,6 +59,7 @@ async def run_evaluation_pipeline(
         summaryFeedback=grading_output.summaryFeedback,
         strengths=grading_output.strengths,
         improvements=grading_output.improvements,
+        conceptFeedback=[],
         aiModelExtraction="Gemini Flash-Lite",
         aiModelGrading="Gemini Flash",
         evaluatedAt=datetime.now(timezone.utc).isoformat(),

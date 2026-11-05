@@ -13,6 +13,12 @@ from app.main import app
 from app.core.config import settings
 
 
+@pytest.fixture(autouse=True)
+def disable_external_gemini_in_tests(monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "")
+
+
+
 @pytest.fixture
 def client():
     # Set testing environment

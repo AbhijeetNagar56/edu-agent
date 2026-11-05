@@ -8,11 +8,11 @@ from app.services.queue import QueueService
 from app.services.repository import Repository, db
 
 
-def test_file_size_exceeds_limit(client):
+def test_file_size_exceeds_limit(student_client):
     large_bytes = b"0" * (settings.MAX_FILE_SIZE_BYTES + 1024)
     files = {"file": ("large_submission.pdf", io.BytesIO(large_bytes), "application/pdf")}
     data = {
-        "student_id": "STU-2024-999",
+        "student_id": "00000000-0000-0000-0000-000000000302",
         "student_name": "Large File Student",
         "student_email": "large@university.edu",
         "assignment_id": "assign-1",
@@ -20,7 +20,7 @@ def test_file_size_exceeds_limit(client):
         "course_code": "CS101",
         "rubric_id": "rubric-1",
     }
-    response = client.post("/api/v1/submissions", data=data, files=files)
+    response = student_client.post("/api/v1/submissions", data=data, files=files)
     assert response.status_code == 413
     res_json = response.json()
     assert res_json["success"] is False

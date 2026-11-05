@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
-import time
+import uuid
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, status as http_status
 
 from app.core.auth import AuthUser, get_current_user, require_role
 from app.core.errors import APIException
+from app.core.logging import logger
 from app.models.common import PaginatedResponse, StandardResponse
 from app.models.evaluation import FacultyOverride, FacultyOverrideRequest
 from app.models.rubric import Rubric, RubricCreate, RubricCriterion, RubricUpdate
@@ -19,7 +20,7 @@ router = APIRouter(prefix="/api/v1/faculty", tags=["Faculty Operations"])
 async def process_jobs_as_faculty(
     user: AuthUser = Depends(require_role(["faculty", "admin"])),
 ):
-    """Allow faculty to run a grading batch from the dashboard."""
+    """Allow faculty to trigger a grading batch from the dashboard."""
     result = await QueueService.process_batch()
     return StandardResponse[Dict[str, Any]](
         success=True,
@@ -33,20 +34,32 @@ async def list_faculty_submissions(
     course_code: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    assignment_id: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     user: AuthUser = Depends(require_role(["faculty", "admin"])),
 ):
     """
     Retrieves submissions across the roster with filtering by course, status, and search query.
-    Includes aggregated class roster metrics.
+    Faculty can access only submissions for courses they are authorized to manage.
     """
+    if course_code and course_code != "ALL":
+        if not Repository.is_course_authorized(course_code, user):
+            logger.warning(f"Faculty {user.id} unauthorized for course {course_code}")
+            raise APIException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                code="FORBIDDEN",
+                message=f"You are not authorized to view submissions for course '{course_code}'.",
+            )
+
     subs, meta = Repository.get_submissions(
         course_code=course_code,
         status=status,
         search=search,
+        assignment_id=assignment_id,
         limit=limit,
         offset=offset,
+        faculty_user=user,
     )
 
     return PaginatedResponse[Submission](
@@ -64,28 +77,48 @@ async def override_submission_grade(
 ):
     """
     Allows an instructor to override an AI evaluation score with an audit rationale.
+    Faculty identity is derived strictly from the authenticated session.
+    Verifies course authorization before modifying the record.
     """
     sub = Repository.get_submission_by_id(id)
     if not sub:
         raise APIException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=http_status.HTTP_404_NOT_FOUND,
             code="NOT_FOUND",
             message=f"Submission with ID '{id}' was not found.",
         )
 
+    # Verify faculty owns/is authorized for the course
+    if not Repository.is_course_authorized(sub.courseCode, user):
+        logger.warning(f"Faculty {user.id} forbidden from overriding submission in course {sub.courseCode}")
+        raise APIException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            code="FORBIDDEN",
+            message=f"You are not authorized to override grades for course '{sub.courseCode}'.",
+        )
+
     original_score = sub.evaluation.score if sub.evaluation else 0.0
+
+    # Derive faculty identity strictly from authenticated user; never trust client-provided overriddenBy
+    authoritative_overridden_by = user.full_name or user.email
 
     override = FacultyOverride(
         isOverridden=True,
         originalScore=original_score,
         overriddenScore=override_req.overriddenScore,
-        overriddenBy=override_req.overriddenBy or user.email,
+        overriddenById=user.id,
+        overriddenByName=authoritative_overridden_by,
+        overriddenBy=authoritative_overridden_by,
         overrideReason=override_req.overrideReason,
         overriddenAt=datetime.now(timezone.utc).isoformat(),
         criterionAdjustments=override_req.criterionAdjustments,
     )
 
-    updated_sub = Repository.override_submission_grade(id, override)
+    updated_sub = Repository.override_submission_grade(
+        submission_id=id,
+        override=override,
+        faculty_user_id=user.id,
+    )
 
     return StandardResponse[Dict[str, Any]](
         success=True,
@@ -99,13 +132,60 @@ async def override_submission_grade(
     )
 
 
+@router.delete("/submissions/{id}/override", response_model=StandardResponse[Dict[str, Any]])
+async def remove_submission_override(
+    id: str,
+    reason: Optional[str] = Query("Faculty override revoked. Reverted to original AI evaluation."),
+    user: AuthUser = Depends(require_role(["faculty", "admin"])),
+):
+    """
+    Allows an instructor to revoke a grade override, reverting to pure AI-computed evaluation
+    and recalculating concept mastery from authoritative evidence.
+    """
+    sub = Repository.get_submission_by_id(id)
+    if not sub:
+        raise APIException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            code="NOT_FOUND",
+            message=f"Submission with ID '{id}' was not found.",
+        )
+
+    if not Repository.is_course_authorized(sub.courseCode, user):
+        logger.warning(f"Faculty {user.id} forbidden from removing override in course {sub.courseCode}")
+        raise APIException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            code="FORBIDDEN",
+            message=f"You are not authorized to manage overrides for course '{sub.courseCode}'.",
+        )
+
+    authoritative_overridden_by = user.full_name or user.email
+
+    updated_sub = Repository.remove_submission_override(
+        submission_id=id,
+        faculty_user_id=user.id,
+        faculty_user_name=authoritative_overridden_by,
+        reason=reason or "Faculty override revoked. Reverted to original AI evaluation.",
+    )
+
+    return StandardResponse[Dict[str, Any]](
+        success=True,
+        data={
+            "submissionId": id,
+            "finalScore": updated_sub.evaluation.score if updated_sub and updated_sub.evaluation else 0.0,
+            "isOverridden": False,
+        },
+        message="Grade override removed successfully. Concept mastery recalculated from original AI evidence.",
+    )
+
+
+
 @router.get("/rubrics", response_model=StandardResponse[List[Rubric]])
 async def list_rubrics(
     course_code: Optional[str] = Query(None),
     user: AuthUser = Depends(get_current_user),
 ):
     """
-    Lists all available assignment grading rubrics and criteria.
+    Lists available assignment grading rubrics and criteria.
     """
     rubrics = Repository.get_rubrics(course_code=course_code)
     return StandardResponse[List[Rubric]](
@@ -115,15 +195,22 @@ async def list_rubrics(
     )
 
 
-@router.post("/rubrics", status_code=status.HTTP_201_CREATED, response_model=StandardResponse[Rubric])
+@router.post("/rubrics", status_code=http_status.HTTP_201_CREATED, response_model=StandardResponse[Rubric])
 async def create_rubric(
     rubric_in: RubricCreate,
     user: AuthUser = Depends(require_role(["faculty", "admin"])),
 ):
     """
-    Creates a new grading rubric with associated weighted criteria.
+    Creates a new grading rubric. Verifies course authorization.
     """
-    rubric_id = f"rubric-{int(time.time() * 1000) % 10000}"
+    if not Repository.is_course_authorized(rubric_in.courseCode, user):
+        raise APIException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            code="FORBIDDEN",
+            message=f"You are not authorized to create rubrics for course '{rubric_in.courseCode}'.",
+        )
+
+    rubric_id = f"rubric-{uuid.uuid4().hex[:8]}"
 
     criteria = [
         RubricCriterion(
@@ -164,16 +251,24 @@ async def update_rubric(
     user: AuthUser = Depends(require_role(["faculty", "admin"])),
 ):
     """
-    Updates rubric metadata or criteria distributions.
+    Updates rubric metadata or criteria distributions. Verifies course authorization.
     """
-    updated = Repository.update_rubric(id, rubric_update)
-    if not updated:
+    rubric = Repository.get_rubric_by_id(id)
+    if not rubric:
         raise APIException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=http_status.HTTP_404_NOT_FOUND,
             code="NOT_FOUND",
             message=f"Rubric with ID '{id}' was not found.",
         )
 
+    if not Repository.is_course_authorized(rubric.courseCode, user):
+        raise APIException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            code="FORBIDDEN",
+            message=f"You are not authorized to update rubrics for course '{rubric.courseCode}'.",
+        )
+
+    updated = Repository.update_rubric(id, rubric_update)
     return StandardResponse[Rubric](
         success=True,
         data=updated,
@@ -187,9 +282,24 @@ async def delete_rubric(
     user: AuthUser = Depends(require_role(["faculty", "admin"])),
 ):
     """
-    Deletes a rubric.
+    Deletes a rubric. Verifies course authorization.
     """
-    success = Repository.delete_rubric(id)
+    rubric = Repository.get_rubric_by_id(id)
+    if not rubric:
+        raise APIException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            code="NOT_FOUND",
+            message=f"Rubric with ID '{id}' was not found.",
+        )
+
+    if not Repository.is_course_authorized(rubric.courseCode, user):
+        raise APIException(
+            status_code=http_status.HTTP_403_FORBIDDEN,
+            code="FORBIDDEN",
+            message=f"You are not authorized to delete rubrics for course '{rubric.courseCode}'.",
+        )
+
+    Repository.delete_rubric(id)
     return StandardResponse[Dict[str, str]](
         success=True,
         data={"deletedId": id},

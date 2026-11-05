@@ -10,7 +10,10 @@ import {
   Download,
   Calendar,
   Layers,
-  ArrowRight
+  ArrowRight,
+  Quote,
+  BrainCircuit,
+  CheckCheck
 } from 'lucide-react';
 import { Submission } from '../lib/types';
 import { Modal } from './Modal';
@@ -89,6 +92,21 @@ export function GradeDetailModal({
           </div>
         </div>
 
+        {/* Manual Review Required Alert */}
+        {submission.status === 'manual_review' && (
+          <div className="bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-800 p-4 rounded-xl flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-orange-600 dark:text-orange-400 shrink-0 mt-0.5" />
+            <div className="text-xs space-y-1">
+              <div className="font-bold text-orange-900 dark:text-orange-200">
+                Manual Review Required (Unextractable or Blank Document)
+              </div>
+              <div className="text-orange-700 dark:text-orange-300">
+                The uploaded document contains no machine-readable text (likely a scanned image, diagram-only PDF, or blank document). Automated AI grading was safely suspended to prevent fabricated or hallucinated feedback. Please grade this submission manually or request a resubmission.
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Score Summary Banner */}
         <div className={`p-5 rounded-2xl border ${scoreColors.bg} ${scoreColors.border} flex flex-wrap items-center justify-between gap-4`}>
           <div>
@@ -162,16 +180,18 @@ export function GradeDetailModal({
               </span>
             </div>
 
-            <div className="space-y-2.5">
+            <div className="space-y-3">
               {evalData.criteriaScores.map((criterion, idx) => {
-                const critRatio = criterion.maxPoints > 0 ? (criterion.scoreAwarded / criterion.maxPoints) : 1;
+                const critRatio = criterion.scoreRatio !== undefined
+                  ? criterion.scoreRatio
+                  : (criterion.maxPoints > 0 ? (criterion.scoreAwarded / criterion.maxPoints) : 1);
                 const critColor = critRatio >= 0.8 ? 'text-emerald-600' : critRatio >= 0.6 ? 'text-amber-600' : 'text-rose-600';
                 const critAdjusted = override?.criterionAdjustments?.[criterion.criterionId];
 
                 return (
                   <div
                     key={criterion.criterionId || idx}
-                    className="p-3.5 rounded-xl bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2"
+                    className="p-3.5 rounded-xl bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2.5"
                   >
                     <div className="flex items-center justify-between">
                       <span className="font-semibold text-slate-900 dark:text-white text-xs">
@@ -186,11 +206,39 @@ export function GradeDetailModal({
                         <span className={`font-bold font-mono text-xs ${critColor}`}>
                           {critAdjusted !== undefined ? critAdjusted : criterion.scoreAwarded} / {criterion.maxPoints} pts
                         </span>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          ({Math.round(critRatio * 100)}%)
+                        </span>
                       </div>
                     </div>
+
                     <p className="text-xs text-slate-600 dark:text-slate-300">
                       {criterion.feedback}
                     </p>
+
+                    {/* Factual Evidence Excerpt */}
+                    {criterion.evidence && (
+                      <div className="p-2.5 rounded-lg bg-indigo-50/60 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/50 text-[11px] space-y-1">
+                        <div className="flex items-center gap-1.5 font-semibold text-indigo-800 dark:text-indigo-300">
+                          <Quote className="w-3 h-3 text-indigo-600" />
+                          <span>Direct Submission Evidence:</span>
+                        </div>
+                        <p className="font-mono text-slate-700 dark:text-slate-300 italic whitespace-pre-wrap">
+                          &ldquo;{criterion.evidence}&rdquo;
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Pedagogical Reasoning */}
+                    {criterion.reasoning && (
+                      <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-150 dark:border-slate-700 text-[11px] space-y-0.5">
+                        <span className="font-semibold text-slate-700 dark:text-slate-300">Pedagogical Rationale:</span>
+                        <p className="text-slate-600 dark:text-slate-400 leading-relaxed">
+                          {criterion.reasoning}
+                        </p>
+                      </div>
+                    )}
+
                     {(criterion.strengths || criterion.improvements) && (
                       <div className="pt-2 border-t border-slate-100 dark:border-slate-700/60 grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
                         {criterion.strengths && (
@@ -212,7 +260,73 @@ export function GradeDetailModal({
           </div>
         )}
 
-        {/* Strengths & Areas for Improvement */}
+        {/* Curriculum Concept Evidence & Mastery Contribution */}
+        {evalData?.conceptFeedback && evalData.conceptFeedback.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <BrainCircuit className="w-4 h-4 text-purple-600" />
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Concept Mastery & Evidence
+                </h4>
+              </div>
+              <span className="text-[11px] text-slate-400">
+                Authoritative mapping via <code className="font-mono">assignment_criterion_concepts</code>
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {evalData.conceptFeedback.map((cf) => {
+                const masteryPct = Math.round(cf.masteryContribution * 100);
+                const confPct = Math.round(cf.confidenceScore * 100);
+                const ratioPct = Math.round(cf.scoreRatio * 100);
+
+                return (
+                  <div
+                    key={cf.conceptId}
+                    className="p-3.5 rounded-xl bg-purple-50/40 dark:bg-purple-950/20 border border-purple-200/70 dark:border-purple-800/60 space-y-2"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="font-bold text-xs text-purple-950 dark:text-purple-200">
+                        {cf.conceptName || 'Curriculum Concept'}
+                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="px-2 py-0.5 rounded-md text-[10px] font-bold font-mono bg-purple-100 text-purple-800 dark:bg-purple-900/60 dark:text-purple-200 border border-purple-200 dark:border-purple-700">
+                          {masteryPct}% Mastery
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded-md text-[10px] font-mono bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                          {confPct}% Conf.
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-mono">
+                      <span>Evidence Ratio: {ratioPct}%</span>
+                      <span>Evidence Samples: N={cf.evidenceCount}</span>
+                    </div>
+
+                    <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                      {cf.feedback}
+                    </p>
+
+                    {cf.strengths && cf.strengths.length > 0 && (
+                      <div className="text-[11px] text-emerald-700 dark:text-emerald-400">
+                        <span className="font-semibold">Strengths:</span> {cf.strengths.join(' • ')}
+                      </div>
+                    )}
+                    {cf.improvements && cf.improvements.length > 0 && (
+                      <div className="text-[11px] text-amber-700 dark:text-amber-400">
+                        <span className="font-semibold">Growth Areas:</span> {cf.improvements.join(' • ')}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Overall Strengths & Areas for Improvement */}
         {evalData && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Strengths */}

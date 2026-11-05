@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = ""
     SUPABASE_KEY: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""
+    SUPABASE_JWT_SECRET: str = ""
     STORAGE_BUCKET_NAME: str = "submissions"
 
     # Cron / Internal authentication
